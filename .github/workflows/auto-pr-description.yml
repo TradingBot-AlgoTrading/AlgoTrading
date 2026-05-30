@@ -28,7 +28,7 @@ jobs:
           
           DIFF=$(git diff origin/main...HEAD 2>/dev/null | head -c 5000)
           
-          PROMPT="Generate a PR title and description for these changes. Current title: $CURRENT_TITLE. Format: First line is the title, then blank line, then description. Diff: $DIFF"
+          PROMPT="IMPORTANT: Respond ONLY in English. Generate a PR title and description for these changes. Current title: $CURRENT_TITLE. Format: First line is the title, then blank line, then description. All content must be in English. Diff: $DIFF"
           
           RESPONSE=$(curl -s -X POST \
             "https://opencode.ai/zen/v1/chat/completions" \
