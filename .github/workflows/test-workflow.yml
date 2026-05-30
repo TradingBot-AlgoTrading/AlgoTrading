@@ -1,0 +1,65 @@
+name: Test Workflow
+
+on:
+  push:
+    branches: ["*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      - name: Debug environment
+        run: |
+          echo "=== Environment Info ==="
+          echo "OS: $(uname -a)"
+          echo "Current directory: $(pwd)"
+          echo "Git user: $(git config user.name)"
+          echo "Git email: $(git config user.email)"
+          echo ""
+          echo "=== Git Log ==="
+          git log --oneline -3
+          echo ""
+          echo "=== Secrets check ==="
+          if [ -n "$OPENCODE_API_KEY" ]; then
+            echo "OPENCODE_API_KEY is set (length: ${#OPENCODE_API_KEY})"
+          else
+            echo "OPENCODE_API_KEY is NOT set"
+          fi
+          if [ -n "$PERSONAL_ACCESS_TOKEN" ]; then
+            echo "PERSONAL_ACCESS_TOKEN is set (length: ${#PERSONAL_ACCESS_TOKEN})"
+          else
+            echo "PERSONAL_ACCESS_TOKEN is NOT set"
+          fi
+
+      - name: Test API connection
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          echo "Testing OpenCode Zen API..."
+          RESPONSE=$(curl -s -X POST \
+            "https://opencode.ai/zen/v1/chat/completions" \
+            -H "Authorization: Bearer $OPENCODE_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "mimo-v2.5-free",
+              "messages": [{"role": "user", "content": "Say hello"}],
+              "max_tokens": 20
+            }')
+          echo "API Response: $RESPONSE"
+          
+          if echo "$RESPONSE" | grep -q "choices"; then
+            echo "API connection successful!"
+          else
+            echo "API connection failed!"
+            exit 1
+          fi
