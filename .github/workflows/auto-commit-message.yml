@@ -28,30 +28,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
+      - name: Debug - Show commit info
+        run: |
+          echo "=== Commit Message ==="
+          git log -1 --pretty=format:"%s"
+          echo ""
+          echo "=== Diff Stats ==="
+          git diff HEAD~1 HEAD --stat || echo "No previous commit"
 
       - name: Generate commit message using OpenCode Zen API
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          DIFF_FULL=$(git diff HEAD~1 HEAD)
+          DIFF_FULL=$(git diff HEAD~1 HEAD 2>/dev/null || echo "No diff available")
           DIFF_TRUNCATED=$(echo "$DIFF_FULL" | head -c 3000)
           
-          PROMPT="You are a commit message generator. Analyze the following git diff and generate a conventional commit message.
+          if [ -z "$DIFF_TRUNCATED" ] || [ "$DIFF_TRUNCATED" = "No diff available" ]; then
+            echo "No changes to analyze, skipping..."
+            exit 0
+          fi
+          
+          PROMPT="Analyze this git diff and generate a conventional commit message (type: description). Only return the message, nothing else.
 
-Format: type(scope): description
-
-Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
-
-Rules:
-1. Use imperative mood (e.g., 'add' not 'added')
-2. Keep the first line under 72 characters
-3. Focus on WHAT changed and WHY
-4. Use scope if relevant (e.g., auth, api, ui, db)
-5. Only return the commit message, nothing else
-
-Diff to analyze:
+Diff:
 $DIFF_TRUNCATED"
           
           RESPONSE=$(curl -s -X POST \
@@ -65,7 +67,15 @@ $DIFF_TRUNCATED"
               \"temperature\": 0.3
             }")
           
-          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' | head -1)
+          echo "API Response: $RESPONSE"
+          
+          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null | head -1)
+          
+          if [ -z "$COMMIT_MSG" ] || [ "$COMMIT_MSG" = "null" ]; then
+            echo "Failed to generate commit message from API response"
+            exit 1
+          fi
+          
           COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/^"//;s/"$//' | tr -d '\n' | head -c 72)
           
           echo "Generated commit message: $COMMIT_MSG"

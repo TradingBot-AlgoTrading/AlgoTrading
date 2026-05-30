@@ -2,7 +2,7 @@ name: Auto PR Description
 
 on:
   pull_request:
-    types: [opened, edited, synchronize]
+    types: [opened, synchronize]
 
 permissions:
   contents: read
@@ -23,39 +23,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gh
 
-      - name: Generate PR title and description using OpenCode Zen API
+      - name: Debug - Show PR info
+        run: |
+          echo "PR Number: ${{ github.event.pull_request.number }}"
+          echo "PR Title: ${{ github.event.pull_request.title }}"
+
+      - name: Generate PR description using OpenCode Zen API
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           
-          DIFF=$(gh pr diff $PR_NUMBER --repo ${{ github.repository }} 2>/dev/null || git diff origin/main...HEAD)
+          DIFF=$(git diff origin/main...HEAD 2>/dev/null || echo "No diff available")
           DIFF_TRUNCATED=$(echo "$DIFF" | head -c 5000)
           
           CURRENT_TITLE="${{ github.event.pull_request.title }}"
           
-          PROMPT="You are a PR description generator. Analyze the following git diff and generate a proper PR title and description.
+          PROMPT="Generate a PR title and description for these changes.
 
-Current PR title: $CURRENT_TITLE
-
-Generate:
-1. A concise title (max 72 chars) following conventional commits format: type(scope): description
-2. A blank line
-3. A detailed description explaining:
-   - What changes were made
-   - Why these changes were made
-   - Any important notes or breaking changes
-
-Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
+Current title: $CURRENT_TITLE
 
 Rules:
-- Use imperative mood
-- Focus on the WHY as much as the WHAT
-- Include any breaking changes or migration notes
-- Keep title under 72 characters
+- Title: type(scope): description (max 72 chars)
+- Description: What changed and why
 
-Git diff to analyze:
+Diff:
 $DIFF_TRUNCATED"
           
           RESPONSE=$(curl -s -X POST \
@@ -69,12 +62,17 @@ $DIFF_TRUNCATED"
               \"temperature\": 0.3
             }")
           
-          PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          echo "API Response: $RESPONSE"
           
-          NEW_TITLE=$(echo "$PR_CONTENT" | head -1)
+          PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null)
+          
+          if [ -z "$PR_CONTENT" ] || [ "$PR_CONTENT" = "null" ]; then
+            echo "Failed to generate PR description from API response"
+            exit 1
+          fi
+          
+          NEW_TITLE=$(echo "$PR_CONTENT" | head -1 | sed 's/^"//;s/"$//' | head -c 72)
           NEW_BODY=$(echo "$PR_CONTENT" | tail -n +3)
-          
-          NEW_TITLE=$(echo "$NEW_TITLE" | sed 's/^"//;s/"$//' | head -c 72)
           
           echo "Generated PR title: $NEW_TITLE"
           echo "---"
