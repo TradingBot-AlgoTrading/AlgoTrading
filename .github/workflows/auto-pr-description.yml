@@ -18,29 +18,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install OpenCode
+      - name: Install GitHub CLI
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+          sudo apt-get update
+          sudo apt-get install -y gh
 
-      - name: Generate PR title and description
+      - name: Generate PR title and description using OpenCode Zen API
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           
-          DIFF=$(gh pr diff $PR_NUMBER --repo ${{ github.repository }})
+          DIFF=$(gh pr diff $PR_NUMBER --repo ${{ github.repository }} 2>/dev/null || git diff origin/main...HEAD)
           DIFF_TRUNCATED=$(echo "$DIFF" | head -c 5000)
           
           CURRENT_TITLE="${{ github.event.pull_request.title }}"
           
-          PR_CONTENT=$(opencode run --model opencode/mimo-v2.5-free "You are a PR description generator. Analyze the following git diff and generate a proper PR title and description.
+          PROMPT="You are a PR description generator. Analyze the following git diff and generate a proper PR title and description.
 
 Current PR title: $CURRENT_TITLE
 
@@ -61,7 +56,20 @@ Rules:
 - Keep title under 72 characters
 
 Git diff to analyze:
-$DIFF_TRUNCATED")
+$DIFF_TRUNCATED"
+          
+          RESPONSE=$(curl -s -X POST \
+            "https://opencode.ai/zen/v1/chat/completions" \
+            -H "Authorization: Bearer $OPENCODE_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"mimo-v2.5-free\",
+              \"messages\": [{\"role\": \"user\", \"content\": $(echo "$PROMPT" | jq -Rs .)}],
+              \"max_tokens\": 500,
+              \"temperature\": 0.3
+            }")
+          
+          PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
           
           NEW_TITLE=$(echo "$PR_CONTENT" | head -1)
           NEW_BODY=$(echo "$PR_CONTENT" | tail -n +3)
@@ -76,4 +84,5 @@ $DIFF_TRUNCATED")
           gh pr edit $PR_NUMBER \
             --repo ${{ github.repository }} \
             --title "$NEW_TITLE" \
-            --body "$NEW_BODY"
+            --body "$NEW_BODY" \
+            --token $GITHUB_TOKEN
