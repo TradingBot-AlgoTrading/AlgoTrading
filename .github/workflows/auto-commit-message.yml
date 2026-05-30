@@ -31,58 +31,47 @@ jobs:
           fetch-depth: 2
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
-      - name: Debug - Show commit info
-        run: |
-          echo "=== Commit Message ==="
-          git log -1 --pretty=format:"%s"
-          echo ""
-          echo "=== Diff Stats ==="
-          git diff HEAD~1 HEAD --stat || echo "No previous commit"
-
-      - name: Generate commit message using OpenCode Zen API
+      - name: Generate commit message
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          DIFF_FULL=$(git diff HEAD~1 HEAD 2>/dev/null || echo "No diff available")
-          DIFF_TRUNCATED=$(echo "$DIFF_FULL" | head -c 3000)
+          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null | head -c 3000)
           
-          if [ -z "$DIFF_TRUNCATED" ] || [ "$DIFF_TRUNCATED" = "No diff available" ]; then
-            echo "No changes to analyze, skipping..."
+          if [ -z "$DIFF" ]; then
+            echo "No diff found, skipping"
             exit 0
           fi
           
-          PROMPT="Analyze this git diff and generate a conventional commit message (type: description). Only return the message, nothing else.
-
-Diff:
-$DIFF_TRUNCATED"
+          cat > /tmp/request.json << 'ENDJSON'
+          {
+            "model": "mimo-v2.5-free",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Generate a conventional commit message for this diff. Only return the message."
+              }
+            ],
+            "max_tokens": 100,
+            "temperature": 0.3
+          }
+          ENDJSON
           
           RESPONSE=$(curl -s -X POST \
             "https://opencode.ai/zen/v1/chat/completions" \
             -H "Authorization: Bearer $OPENCODE_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"model\": \"mimo-v2.5-free\",
-              \"messages\": [{\"role\": \"user\", \"content\": $(echo "$PROMPT" | jq -Rs .)}],
-              \"max_tokens\": 100,
-              \"temperature\": 0.3
-            }")
+            -d @/tmp/request.json)
           
-          echo "API Response: $RESPONSE"
+          echo "Response: $RESPONSE"
           
-          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null | head -1)
+          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null | head -1 | cut -c1-72)
           
-          if [ -z "$COMMIT_MSG" ] || [ "$COMMIT_MSG" = "null" ]; then
-            echo "Failed to generate commit message from API response"
-            exit 1
+          if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit --amend -m "$COMMIT_MSG" --no-verify
+            git push --force-with-lease origin ${{ github.ref_name }}
+            echo "Commit amended successfully"
+          else
+            echo "Failed to generate commit message"
           fi
-          
-          COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/^"//;s/"$//' | tr -d '\n' | head -c 72)
-          
-          echo "Generated commit message: $COMMIT_MSG"
-          
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git commit --amend -m "$COMMIT_MSG" --no-verify
-          
-          git push --force-with-lease origin ${{ github.ref_name }}

@@ -18,69 +18,51 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install GitHub CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh
-
-      - name: Debug - Show PR info
-        run: |
-          echo "PR Number: ${{ github.event.pull_request.number }}"
-          echo "PR Title: ${{ github.event.pull_request.title }}"
-
-      - name: Generate PR description using OpenCode Zen API
+      - name: Generate PR description
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          
-          DIFF=$(git diff origin/main...HEAD 2>/dev/null || echo "No diff available")
-          DIFF_TRUNCATED=$(echo "$DIFF" | head -c 5000)
-          
           CURRENT_TITLE="${{ github.event.pull_request.title }}"
           
-          PROMPT="Generate a PR title and description for these changes.
-
-Current title: $CURRENT_TITLE
-
-Rules:
-- Title: type(scope): description (max 72 chars)
-- Description: What changed and why
-
-Diff:
-$DIFF_TRUNCATED"
+          DIFF=$(git diff origin/main...HEAD 2>/dev/null | head -c 5000)
+          
+          cat > /tmp/request.json << ENDJSON
+          {
+            "model": "mimo-v2.5-free",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Generate PR title and description. Current title: ${CURRENT_TITLE}. Diff: ${DIFF}"
+              }
+            ],
+            "max_tokens": 500,
+            "temperature": 0.3
+          }
+          ENDJSON
           
           RESPONSE=$(curl -s -X POST \
             "https://opencode.ai/zen/v1/chat/completions" \
             -H "Authorization: Bearer $OPENCODE_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"model\": \"mimo-v2.5-free\",
-              \"messages\": [{\"role\": \"user\", \"content\": $(echo "$PROMPT" | jq -Rs .)}],
-              \"max_tokens\": 500,
-              \"temperature\": 0.3
-            }")
+            -d @/tmp/request.json)
           
-          echo "API Response: $RESPONSE"
+          echo "Response: $RESPONSE"
           
           PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null)
           
-          if [ -z "$PR_CONTENT" ] || [ "$PR_CONTENT" = "null" ]; then
-            echo "Failed to generate PR description from API response"
-            exit 1
+          if [ -n "$PR_CONTENT" ] && [ "$PR_CONTENT" != "null" ]; then
+            NEW_TITLE=$(echo "$PR_CONTENT" | head -1 | cut -c1-72)
+            NEW_BODY=$(echo "$PR_CONTENT" | tail -n +3)
+            
+            curl -s -X PATCH \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER" \
+              -d "{\"title\": \"$NEW_TITLE\", \"body\": $(echo "$NEW_BODY" | jq -Rs .)}"
+            
+            echo "PR updated successfully"
+          else
+            echo "Failed to generate PR description"
           fi
-          
-          NEW_TITLE=$(echo "$PR_CONTENT" | head -1 | sed 's/^"//;s/"$//' | head -c 72)
-          NEW_BODY=$(echo "$PR_CONTENT" | tail -n +3)
-          
-          echo "Generated PR title: $NEW_TITLE"
-          echo "---"
-          echo "Generated PR body:"
-          echo "$NEW_BODY"
-          
-          gh pr edit $PR_NUMBER \
-            --repo ${{ github.repository }} \
-            --title "$NEW_TITLE" \
-            --body "$NEW_BODY" \
-            --token $GITHUB_TOKEN
