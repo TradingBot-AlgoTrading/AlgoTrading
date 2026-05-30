@@ -31,7 +31,7 @@ jobs:
             exit 0
           fi
           
-          PROMPT="Generate a conventional commit message for this diff. Format: type(scope): description. Only return the commit message text, nothing else. Diff: $DIFF"
+          PROMPT="IMPORTANT: Respond ONLY in English. Generate a conventional commit message for this diff. Format: type(scope): description. Only return the commit message text in English, nothing else. Diff: $DIFF"
           
           MODELS=("mimo-v2.5-free" "nemotron-3-super-free" "deepseek-v4-flash-free")
           COMMIT_MSG=""
