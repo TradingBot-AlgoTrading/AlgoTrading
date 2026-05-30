@@ -28,31 +28,26 @@ jobs:
           
           DIFF=$(git diff origin/main...HEAD 2>/dev/null | head -c 5000)
           
-          cat > /tmp/request.json << ENDJSON
-          {
-            "model": "mimo-v2.5-free",
-            "messages": [
-              {
-                "role": "user",
-                "content": "Generate PR title and description. Current title: ${CURRENT_TITLE}. Diff: ${DIFF}"
-              }
-            ],
-            "max_tokens": 500,
-            "temperature": 0.3
-          }
-          ENDJSON
+          PROMPT="Generate a PR title and description for these changes. Current title: $CURRENT_TITLE. Format: First line is the title, then blank line, then description. Diff: $DIFF"
           
           RESPONSE=$(curl -s -X POST \
             "https://opencode.ai/zen/v1/chat/completions" \
             -H "Authorization: Bearer $OPENCODE_API_KEY" \
             -H "Content-Type: application/json" \
-            -d @/tmp/request.json)
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              '{
+                model: "mimo-v2.5-free",
+                messages: [{role: "user", content: $prompt}],
+                max_tokens: 4096,
+                temperature: 0.3
+              }')")
           
           echo "Response: $RESPONSE"
           
-          PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null)
+          PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // .choices[0].message.reasoning' 2>/dev/null)
           
-          if [ -n "$PR_CONTENT" ] && [ "$PR_CONTENT" != "null" ]; then
+          if [ -n "$PR_CONTENT" ] && [ "$PR_CONTENT" != "null" ] && [ "$PR_CONTENT" != "" ]; then
             NEW_TITLE=$(echo "$PR_CONTENT" | head -1 | cut -c1-72)
             NEW_BODY=$(echo "$PR_CONTENT" | tail -n +3)
             
@@ -60,9 +55,13 @@ jobs:
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER" \
-              -d "{\"title\": \"$NEW_TITLE\", \"body\": $(echo "$NEW_BODY" | jq -Rs .)}"
+              -d "$(jq -n \
+                --arg title "$NEW_TITLE" \
+                --arg body "$NEW_BODY" \
+                '{title: $title, body: $body}')"
             
-            echo "PR updated successfully"
+            echo "PR #$PR_NUMBER updated successfully"
           else
             echo "Failed to generate PR description"
+            exit 1
           fi

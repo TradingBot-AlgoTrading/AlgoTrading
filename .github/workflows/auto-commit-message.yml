@@ -18,12 +18,6 @@ jobs:
           fetch-depth: 2
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
-      - name: Debug info
-        run: |
-          echo "=== Commit Info ==="
-          echo "Message: $(git log -1 --pretty=format:'%s')"
-          echo "Author: $(git log -1 --pretty=format:'%an')"
-
       - name: Generate commit message
         if: ${{ !contains(github.event.head_commit.message, ':') }}
         env:
@@ -36,36 +30,32 @@ jobs:
             exit 0
           fi
           
-          cat > /tmp/request.json << 'ENDJSON'
-          {
-            "model": "mimo-v2.5-free",
-            "messages": [
-              {
-                "role": "user",
-                "content": "Generate a conventional commit message (type: description). Only return the message."
-              }
-            ],
-            "max_tokens": 100,
-            "temperature": 0.3
-          }
-          ENDJSON
+          PROMPT="Generate a conventional commit message for this diff. Format: type(scope): description. Only return the commit message text, nothing else. Diff: $DIFF"
           
           RESPONSE=$(curl -s -X POST \
             "https://opencode.ai/zen/v1/chat/completions" \
             -H "Authorization: Bearer $OPENCODE_API_KEY" \
             -H "Content-Type: application/json" \
-            -d @/tmp/request.json)
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              '{
+                model: "mimo-v2.5-free",
+                messages: [{role: "user", content: $prompt}],
+                max_tokens: 4096,
+                temperature: 0.3
+              }')")
           
           echo "Response: $RESPONSE"
           
-          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null | head -1 | cut -c1-72)
+          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // .choices[0].message.reasoning' 2>/dev/null | head -1 | cut -c1-72)
           
-          if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ]; then
+          if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ] && [ "$COMMIT_MSG" != "" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git commit --amend -m "$COMMIT_MSG" --no-verify
             git push --force-with-lease origin ${{ github.ref_name }}
-            echo "Commit amended successfully"
+            echo "Commit amended to: $COMMIT_MSG"
           else
             echo "Failed to generate commit message"
+            exit 1
           fi
