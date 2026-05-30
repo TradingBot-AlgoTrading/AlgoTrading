@@ -50,11 +50,18 @@ jobs:
           COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // .choices[0].message.reasoning' 2>/dev/null | head -1 | cut -c1-72)
           
           if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ] && [ "$COMMIT_MSG" != "" ]; then
+            echo "Generated commit message: $COMMIT_MSG"
+            
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git commit --amend -m "$COMMIT_MSG" --no-verify
-            git push --force-with-lease origin ${{ github.ref_name }}
-            echo "Commit amended to: $COMMIT_MSG"
+            
+            if git push --force-with-lease origin ${{ github.ref_name }} 2>/dev/null; then
+              echo "Commit amended and pushed successfully"
+            else
+              echo "Push blocked (protected branch). Commit message generated but not pushed."
+              echo "COMMIT_MSG=$COMMIT_MSG" >> $GITHUB_OUTPUT
+            fi
           else
             echo "Failed to generate commit message"
             exit 1
