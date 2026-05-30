@@ -10,19 +10,6 @@ permissions:
 jobs:
   update-commit-message:
     runs-on: ubuntu-latest
-    if: >-
-      !contains(github.event.head_commit.message, 'feat:') &&
-      !contains(github.event.head_commit.message, 'fix:') &&
-      !contains(github.event.head_commit.message, 'docs:') &&
-      !contains(github.event.head_commit.message, 'style:') &&
-      !contains(github.event.head_commit.message, 'refactor:') &&
-      !contains(github.event.head_commit.message, 'perf:') &&
-      !contains(github.event.head_commit.message, 'test:') &&
-      !contains(github.event.head_commit.message, 'build:') &&
-      !contains(github.event.head_commit.message, 'ci:') &&
-      !contains(github.event.head_commit.message, 'chore:') &&
-      !contains(github.event.head_commit.message, 'revert:') &&
-      !contains(github.event.head_commit.message, 'Merge')
 
     steps:
       - name: Checkout repository
@@ -31,7 +18,14 @@ jobs:
           fetch-depth: 2
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
+      - name: Debug info
+        run: |
+          echo "=== Commit Info ==="
+          echo "Message: $(git log -1 --pretty=format:'%s')"
+          echo "Author: $(git log -1 --pretty=format:'%an')"
+
       - name: Generate commit message
+        if: ${{ !contains(github.event.head_commit.message, ':') }}
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
@@ -48,7 +42,7 @@ jobs:
             "messages": [
               {
                 "role": "user",
-                "content": "Generate a conventional commit message for this diff. Only return the message."
+                "content": "Generate a conventional commit message (type: description). Only return the message."
               }
             ],
             "max_tokens": 100,
