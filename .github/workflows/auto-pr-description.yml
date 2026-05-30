@@ -1,0 +1,79 @@
+name: Auto PR Description
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  update-pr-description:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install OpenCode
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+
+      - name: Generate PR title and description
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          
+          DIFF=$(gh pr diff $PR_NUMBER --repo ${{ github.repository }})
+          DIFF_TRUNCATED=$(echo "$DIFF" | head -c 5000)
+          
+          CURRENT_TITLE="${{ github.event.pull_request.title }}"
+          
+          PR_CONTENT=$(opencode run --model opencode/mimo-v2.5-free "You are a PR description generator. Analyze the following git diff and generate a proper PR title and description.
+
+Current PR title: $CURRENT_TITLE
+
+Generate:
+1. A concise title (max 72 chars) following conventional commits format: type(scope): description
+2. A blank line
+3. A detailed description explaining:
+   - What changes were made
+   - Why these changes were made
+   - Any important notes or breaking changes
+
+Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
+
+Rules:
+- Use imperative mood
+- Focus on the WHY as much as the WHAT
+- Include any breaking changes or migration notes
+- Keep title under 72 characters
+
+Git diff to analyze:
+$DIFF_TRUNCATED")
+          
+          NEW_TITLE=$(echo "$PR_CONTENT" | head -1)
+          NEW_BODY=$(echo "$PR_CONTENT" | tail -n +3)
+          
+          NEW_TITLE=$(echo "$NEW_TITLE" | sed 's/^"//;s/"$//' | head -c 72)
+          
+          echo "Generated PR title: $NEW_TITLE"
+          echo "---"
+          echo "Generated PR body:"
+          echo "$NEW_BODY"
+          
+          gh pr edit $PR_NUMBER \
+            --repo ${{ github.repository }} \
+            --title "$NEW_TITLE" \
+            --body "$NEW_BODY"
