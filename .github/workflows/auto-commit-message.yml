@@ -10,68 +10,62 @@ permissions:
 jobs:
   update-commit-message:
     runs-on: ubuntu-latest
-    if: >-
-      !contains(github.event.head_commit.message, 'feat:') &&
-      !contains(github.event.head_commit.message, 'fix:') &&
-      !contains(github.event.head_commit.message, 'docs:') &&
-      !contains(github.event.head_commit.message, 'style:') &&
-      !contains(github.event.head_commit.message, 'refactor:') &&
-      !contains(github.event.head_commit.message, 'perf:') &&
-      !contains(github.event.head_commit.message, 'test:') &&
-      !contains(github.event.head_commit.message, 'build:') &&
-      !contains(github.event.head_commit.message, 'ci:') &&
-      !contains(github.event.head_commit.message, 'chore:') &&
-      !contains(github.event.head_commit.message, 'revert:') &&
-      !contains(github.event.head_commit.message, 'Merge')
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_PAT }}
+          fetch-depth: 2
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install OpenCode
+      - name: Debug info
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+          echo "=== Commit Info ==="
+          echo "Message: $(git log -1 --pretty=format:'%s')"
+          echo "Author: $(git log -1 --pretty=format:'%an')"
 
       - name: Generate commit message
+        if: ${{ !contains(github.event.head_commit.message, ':') }}
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          DIFF=$(git diff HEAD~1 HEAD --stat)
-          DIFF_FULL=$(git diff HEAD~1 HEAD)
-          DIFF_TRUNCATED=$(echo "$DIFF_FULL" | head -c 3000)
+          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null | head -c 3000)
           
-          COMMIT_MSG=$(opencode run --model opencode/mimo-v2.5-free "You are a commit message generator. Analyze the following git diff and generate a conventional commit message.
-
-Format: type(scope): description
-
-Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
-
-Rules:
-1. Use imperative mood (e.g., 'add' not 'added')
-2. Keep the first line under 72 characters
-3. Focus on WHAT changed and WHY
-4. Use scope if relevant (e.g., auth, api, ui, db)
-5. Only return the commit message, nothing else
-
-Diff to analyze:
-$DIFF_TRUNCATED")
+          if [ -z "$DIFF" ]; then
+            echo "No diff found, skipping"
+            exit 0
+          fi
           
-          COMMIT_MSG=$(echo "$COMMIT_MSG" | sed 's/^"//;s/"$//' | tr -d '\n' | head -c 72)
+          cat > /tmp/request.json << 'ENDJSON'
+          {
+            "model": "mimo-v2.5-free",
+            "messages": [
+              {
+                "role": "user",
+                "content": "Generate a conventional commit message (type: description). Only return the message."
+              }
+            ],
+            "max_tokens": 100,
+            "temperature": 0.3
+          }
+          ENDJSON
           
-          echo "Generated commit message: $COMMIT_MSG"
+          RESPONSE=$(curl -s -X POST \
+            "https://opencode.ai/zen/v1/chat/completions" \
+            -H "Authorization: Bearer $OPENCODE_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/request.json)
           
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Response: $RESPONSE"
           
-          git commit --amend -m "$COMMIT_MSG" --no-verify
+          COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null | head -1 | cut -c1-72)
           
-          git push --force-with-lease origin ${{ github.ref_name }}
+          if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit --amend -m "$COMMIT_MSG" --no-verify
+            git push --force-with-lease origin ${{ github.ref_name }}
+            echo "Commit amended successfully"
+          else
+            echo "Failed to generate commit message"
+          fi
