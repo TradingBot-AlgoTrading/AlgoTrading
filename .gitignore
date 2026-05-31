@@ -124,3 +124,7 @@ dmypy.json
 
 # Cython
 cython_debug/
+
+# OpenCode local config
+opencode.json
+.opencode/
