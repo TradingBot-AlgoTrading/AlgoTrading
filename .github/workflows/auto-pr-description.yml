@@ -17,6 +17,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Generate PR description
         env:
@@ -25,9 +26,9 @@ jobs:
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           CURRENT_TITLE="${{ github.event.pull_request.title }}"
-          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
           
-          DIFF=$(git diff origin/main...HEAD 2>/dev/null | head -c 5000)
+          DIFF=$(git diff origin/main...HEAD 2>/dev/null || git diff HEAD~1 HEAD 2>/dev/null || echo "")
+          DIFF=$(echo "$DIFF" | head -c 5000)
           
           PROMPT="IMPORTANT: Respond ONLY in English. Generate a PR title and description for these changes. Current title: $CURRENT_TITLE. Format: First line is the title, then blank line, then description. All content must be in English. Diff: $DIFF"
           
@@ -44,8 +45,6 @@ jobs:
                 temperature: 0.3
               }')")
           
-          echo "Response: $RESPONSE"
-          
           PR_CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // .choices[0].message.reasoning' 2>/dev/null)
           
           if [ -n "$PR_CONTENT" ] && [ "$PR_CONTENT" != "null" ] && [ "$PR_CONTENT" != "" ]; then
@@ -61,33 +60,35 @@ jobs:
                 --arg body "$NEW_BODY" \
                 '{title: $title, body: $body}')"
             
-            echo "PR #$PR_NUMBER title and description updated"
-          else
-            echo "Failed to generate PR description"
+            echo "PR #$PR_NUMBER updated"
           fi
 
-      - name: Add labels based on changes
+      - name: Add labels
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          DIFF=$(git diff origin/main...HEAD --name-only 2>/dev/null)
+          
+          FILES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/files" | \
+            jq -r '.[].filename')
           
           LABELS=""
           
-          if echo "$DIFF" | grep -qE "\.github/workflows/"; then
+          if echo "$FILES" | grep -qE "\.github/workflows/"; then
             LABELS="$LABELS,ci"
           fi
-          if echo "$DIFF" | grep -qE "\.(py|js|ts|go|java)$"; then
+          if echo "$FILES" | grep -qE "\.(py|js|ts|go|java)$"; then
             LABELS="$LABELS,code"
           fi
-          if echo "$DIFF" | grep -qE "(README|docs/|\.md)"; then
+          if echo "$FILES" | grep -qE "(README|docs/|\.md)"; then
             LABELS="$LABELS,documentation"
           fi
-          if echo "$DIFF" | grep -qE "(test|spec)"; then
+          if echo "$FILES" | grep -qE "(test|spec)"; then
             LABELS="$LABELS,testing"
           fi
-          if echo "$DIFF" | grep -qE "(requirements|package\.json|\.toml|Dockerfile)"; then
+          if echo "$FILES" | grep -qE "(requirements|package\.json|\.toml|Dockerfile)"; then
             LABELS="$LABELS,dependencies"
           fi
           
@@ -100,7 +101,7 @@ jobs:
               "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/labels" \
               -d "$(jq -n --arg labels "$LABELS" '{labels: ($labels | split(","))}')"
             
-            echo "Labels added: $LABELS"
+            echo "Labels: $LABELS"
           fi
 
       - name: Add reviewer and assignee
@@ -109,12 +110,6 @@ jobs:
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           PR_AUTHOR="${{ github.event.pull_request.user.login }}"
-          
-          curl -s -X POST \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-            -d '{"event":"COMMENT","body":"Auto-assigned for review"}' > /dev/null
           
           curl -s -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
