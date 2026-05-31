@@ -16,73 +16,75 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 2
+          fetch-depth: 20
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
 
-      - name: Generate commit message
-        if: ${{ !contains(github.event.head_commit.message, ':') }}
+      - name: Fix all commit messages
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
-          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null | head -c 3000)
+          BRANCH="${{ github.ref_name }}"
           
-          if [ -z "$DIFF" ]; then
-            echo "No diff found, skipping"
+          COMMITS=$(git log origin/main..HEAD --oneline --no-merges --reverse)
+          
+          if [ -z "$COMMITS" ]; then
+            echo "No commits"
             exit 0
           fi
           
-          PROMPT="IMPORTANT: Respond ONLY in English. Generate a conventional commit message for this diff. Format: type(scope): description. Only return the commit message text in English, nothing else. Diff: $DIFF"
+          NEEDS_FIX=0
           
-          MODELS=("mimo-v2.5-free" "nemotron-3-super-free" "deepseek-v4-flash-free")
-          COMMIT_MSG=""
-          
-          for MODEL in "${MODELS[@]}"; do
-            echo "Trying model: $MODEL"
+          echo "$COMMITS" | while read -r line; do
+            SHA=$(echo "$line" | cut -d' ' -f1)
+            MSG=$(echo "$line" | cut -d' ' -f2-)
             
-            RESPONSE=$(curl -s -X POST \
-              "https://opencode.ai/zen/v1/chat/completions" \
-              -H "Authorization: Bearer $OPENCODE_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -n \
-                --arg prompt "$PROMPT" \
-                --arg model "$MODEL" \
-                '{
-                  model: $model,
-                  messages: [{role: "user", content: $prompt}],
-                  max_tokens: 4096,
-                  temperature: 0.3
-                }')")
-            
-            echo "Response from $MODEL: $RESPONSE"
-            
-            if echo "$RESPONSE" | grep -q '"error"'; then
-              echo "Error from $MODEL, trying next..."
-              sleep 2
-              continue
+            if echo "$MSG" | grep -qE "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert):"; then
+              echo "OK: $MSG"
+            else
+              echo "NEEDS FIX: $MSG"
+              NEEDS_FIX=1
             fi
-            
-            COMMIT_MSG=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null | head -1 | cut -c1-72)
-            
-            if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ]; then
-              echo "Success with model: $MODEL"
-              break
-            fi
-            
-            sleep 2
           done
           
-          if [ -n "$COMMIT_MSG" ] && [ "$COMMIT_MSG" != "null" ] && [ "$COMMIT_MSG" != "" ]; then
-            echo "Generated commit message: $COMMIT_MSG"
-            
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit --amend -m "$COMMIT_MSG" --no-verify
-            
-            if git push --force-with-lease origin ${{ github.ref_name }} 2>/dev/null; then
-              echo "Commit amended and pushed successfully"
-            else
-              echo "Push failed, but commit message was generated"
+          if [ "$NEEDS_FIX" = "0" ]; then
+            echo "All commits OK"
+            exit 0
+          fi
+          
+          FIRST_BAD=$(git log origin/main..HEAD --oneline --no-merges --reverse | grep -vE "^[a-f0-9]+ (feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert):" | head -1 | cut -d' ' -f1)
+          
+          if [ -z "$FIRST_BAD" ]; then
+            echo "No bad commits found"
+            exit 0
+          fi
+          
+          echo "First bad commit: $FIRST_BAD"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git rebase --onto "$FIRST_BAD~" "$FIRST_BAD" HEAD --exec '
+            MSG=$(git log -1 --format=%s)
+            if ! echo "$MSG" | grep -qE "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert):"; then
+              DIFF=$(git show HEAD --stat --format="" | head -c 1000)
+              PROMPT="Generate conventional commit message in English. Format: type(scope): desc. Only return message. Old: $MSG"
+              for MODEL in mimo-v2.5-free nemotron-3-super-free; do
+                RESP=$(curl -s -X POST "https://opencode.ai/zen/v1/chat/completions" \
+                  -H "Authorization: Bearer '"$OPENCODE_API_KEY"'" \
+                  -H "Content-Type: application/json" \
+                  -d "$(jq -n --arg p "$PROMPT" --arg m "$MODEL" '"'"'{"model":$m,"messages":[{"role":"user","content":$p}],"max_tokens":4096,"temperature":0.3}'"'"')")
+                NEW=$(echo "$RESP" | jq -r '"'"'.choices[0].message.content // empty'"'"' 2>/dev/null | head -1 | cut -c1-72)
+                if [ -n "$NEW" ] && [ "$NEW" != "null" ]; then
+                  git commit --amend -m "$NEW" --no-verify
+                  break
+                fi
+                sleep 1
+              done
             fi
+          ' 2>/dev/null || true
+          
+          if git push --force-with-lease origin "$BRANCH" 2>/dev/null; then
+            echo "All commits fixed"
           else
-            echo "All models failed, keeping original commit message"
+            echo "Push failed"
           fi
