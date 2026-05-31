@@ -25,6 +25,7 @@ jobs:
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           CURRENT_TITLE="${{ github.event.pull_request.title }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
           
           DIFF=$(git diff origin/main...HEAD 2>/dev/null | head -c 5000)
           
@@ -60,8 +61,71 @@ jobs:
                 --arg body "$NEW_BODY" \
                 '{title: $title, body: $body}')"
             
-            echo "PR #$PR_NUMBER updated successfully"
+            echo "PR #$PR_NUMBER title and description updated"
           else
             echo "Failed to generate PR description"
-            exit 1
           fi
+
+      - name: Add labels based on changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          DIFF=$(git diff origin/main...HEAD --name-only 2>/dev/null)
+          
+          LABELS=""
+          
+          if echo "$DIFF" | grep -qE "\.github/workflows/"; then
+            LABELS="$LABELS,ci"
+          fi
+          if echo "$DIFF" | grep -qE "\.(py|js|ts|go|java)$"; then
+            LABELS="$LABELS,code"
+          fi
+          if echo "$DIFF" | grep -qE "(README|docs/|\.md)"; then
+            LABELS="$LABELS,documentation"
+          fi
+          if echo "$DIFF" | grep -qE "(test|spec)"; then
+            LABELS="$LABELS,testing"
+          fi
+          if echo "$DIFF" | grep -qE "(requirements|package\.json|\.toml|Dockerfile)"; then
+            LABELS="$LABELS,dependencies"
+          fi
+          
+          LABELS=$(echo "$LABELS" | sed 's/^,//')
+          
+          if [ -n "$LABELS" ]; then
+            curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/labels" \
+              -d "$(jq -n --arg labels "$LABELS" '{labels: ($labels | split(","))}')"
+            
+            echo "Labels added: $LABELS"
+          fi
+
+      - name: Add reviewer and assignee
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
+            -d '{"event":"COMMENT","body":"Auto-assigned for review"}' > /dev/null
+          
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/requested_reviewers" \
+            -d '{"reviewers":["JosephRiosHenao"]}'
+          
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/$PR_NUMBER/assignees" \
+            -d "$(jq -n --arg user "$PR_AUTHOR" '{assignees: [$user]}')"
+          
+          echo "Reviewer: JosephRiosHenao | Assignee: $PR_AUTHOR"
